@@ -4,8 +4,9 @@
 
 //------------------
 // Scratch
-// - Let's just assume that the full range of any normal distribution is 3.5 std devs
-// - Also, it's probably easier to just use normalized normal distributions (3.5 std dev = 0.5)
+// - Let's just assume that the full range of any normal distribution is 3.5 std devs (in one direction)
+// - Also, it's probably easier to just use normalized normal distributions (3.5 std dev = half of the distribution)
+const MAX_SD = 3.5;
 
 import gaussian from 'gaussian'; // Documentation: https://github.com/errcw/gaussian
 import NormalDistribution from 'normal-distribution';
@@ -15,15 +16,15 @@ class Cowboy {
   /**
    * Individual Properties
    * @param {string} name it's a name
-   * @param {number} width "w" in Fitts's Law
+   * @param {number} width "w" in Fitts's Law, made up units
    * 
    * Shooting Properties
-   * @param {number} delay "a" in Fitts's Law
-   * @param {number} acceleration "b" in Fitts's Law
-   * @param {number} error desired error/accuracy
-   * @param {number} consistency variance of error; ideal range: [~0-50]
+   * @param {number} delay "a" in Fitts's Law, seconds
+   * @param {number} acceleration "b" in Fitts's Law, made up units
+   * @param {number} error desired error/accuracy, %: [0-1]
+   * @param {number} consistency variance of error; ideal range: [0-50]
    */
-  constructor(name, width=2, delay=1, acceleration=1, error=0.5, consistency=0) {
+  constructor(name, width=2, delay=0.250, acceleration=1, error=0.5, consistency=0) {
     this.name = name;
 
     this.width = width;
@@ -37,11 +38,45 @@ class Cowboy {
   /**
    * Samples a value from the W_e distribution.
    * @param {Cowboy} target who we shootin'???
-   * @returns {number} position of the shot relative to center of target
+   * @param {number} distance how far away is the target?
+   * @returns {object} shot information: {
+   *   pos: position of the shot relative to center of target,
+   *   time: time it took to fire the shot,
+   *   hit: did the shot hit?
+   * }
    */
-  shoot(target) {
+  shoot(target, distance=10) {
     const w_e_dist = this.get_w_e_distribution(target);
-    return capped_sample(w_e_dist);
+    const pos = capped_sample(w_e_dist);
+    const time = this.calc_shot_speed(w_e_dist, distance);
+    // TODO: this will need to be reworked a bit for headshots/bodyshots
+    const hit = Math.abs(pos) <= target.width / 2;
+
+    return { pos, time, hit };
+  }
+
+  /**
+   * Uses Fitts's Law to calculate shot speed (MT).
+   * @param {gaussian} w_e_dist w_e distribution of shot
+   * @param {number} distance how far is the target?
+   * @returns {number} shot speed, lower-bound is 100ms
+   */
+  calc_shot_speed(w_e_dist, distance) {
+    const w_e = w_e_dist.standardDeviation * MAX_SD;
+
+    // give some variance to reaction time, why not
+    // 0.001 is an arbitrary value that just seems to give a good spread
+    const delay_dist = gaussian(this.delay, 0.001);
+    // 100ms seems like a reasonable lower-bound
+    const curr_delay = Math.max(delay_dist.ppf(Math.random()), 0.100);
+
+    // if distance is less than half of the width_error, then you're
+    // already on target, so shot speed is just reaction time (delay)
+    if(distance <= w_e / 2) {
+      return curr_delay;
+    }
+
+    return curr_delay + this.acceleration * Math.log2(2 * distance / w_e);
   }
 
   /**
@@ -57,11 +92,11 @@ class Cowboy {
       curr_error = this.error;
     } else {
       // Generate `errorDist` with mean = `error` and variance = `consistency`
-      const errorDist = gaussian(this.error, this.consistency / 1000);
+      const error_dist = gaussian(this.error, this.consistency / 1000);
       
       // Sample a value `curr_error` from `errorDist`
       // ^- This how we add randomness (or none if `consistency` == 0)
-      curr_error = errorDist.ppf(Math.random());
+      curr_error = error_dist.ppf(Math.random());
     }
     
     if(curr_error <= 0) {
@@ -85,9 +120,9 @@ class Cowboy {
 
     // Sanity Check Test Case
     // If `targetWidth` = 2, `error` = 0.5, and `consistency` = 0:
-    // w_eDist.cdf(1) ~= 0.75
-    // w_eDist.cdf(0) ~= 0.50
-    // w_eDist.cdf(-1) ~= 0.25
+    // w_e_dist.cdf(1) ~= 0.75
+    // w_e_dist.cdf(0) ~= 0.50
+    // w_e_dist.cdf(-1) ~= 0.25
   }
 }
 
@@ -135,9 +170,14 @@ function inverse_normal(p) {
     return retVal;
 }
 
+/**
+ * Samples from a given distribution but caps results within MAX_SD.
+ * @param {gaussian} dist distribution to sample from
+ * @returns {number} capped sample value
+ */
 function capped_sample(dist) {
   const std_dev = dist.standardDeviation;
-  const cap = std_dev * 3.5; // arbitrary
+  const cap = std_dev * MAX_SD;
 
   let sample = dist.ppf(Math.random());
   if(sample > cap) {
@@ -154,35 +194,80 @@ function capped_sample(dist) {
  * Handles shots back and forth until someone dies.
  * @param {Cowboy} cowboy_a
  * @param {Cowboy} cowboy_b
+ * @returns {array} duel timeline: [
+ *   {
+ *     shooter: name of who shot,
+ *     time: time in the timeline when the shot was taken,
+ *     pos: position of shot relative to target,
+ *     hit: result of the shot
+ *   }
+ * ]
  */
-function simulateDuel() {
-  // Initialize counters for both cowboys, set to initial shot speed
-  // Check which counter is smaller
-  // Call `simulateShot` for the smaller counter
-  // If someone died: duel is over
-  // Else: Increment smaller counter by shot speed
-  // Repeat Step 2
+function simulate_duel(cowboy_a, cowboy_b) {
+  let shot_timeline = [];
 
+  let is_turn_a = false;
+  let is_over = false;
+
+  let shot_a = cowboy_a.shoot(cowboy_b);
+  let shot_b = cowboy_b.shoot(cowboy_a);
+
+  // Initialize counters for both cowboys, set to initial shot speed
+  let counter_a = shot_a['time'];
+  let counter_b = shot_b['time'];
+
+  let infinity_check = 0; // debug
+  while(!is_over && infinity_check < 1000) {
+    infinity_check++;
+
+    // Check which counter is smaller
+    is_turn_a = counter_a <= counter_b;
+
+    // Call `simulateShot` for the smaller counter
+    // If someone died: duel is over
+    // Else: Increment smaller counter by shot speed
+
+    console.log(shot_a);
+    console.log(shot_b);
+
+    // TODO: clean-up repeated code
+    if(is_turn_a) {
+      shot_timeline.push({
+        shooter: cowboy_a['name'],
+        time: counter_a,
+        pos: shot_a['pos'],
+        hit: shot_a['hit']
+      });
+
+      counter_a += shot_a['time'];
+      is_over = shot_a['hit'];
+      
+      shot_a = cowboy_a.shoot(cowboy_b);
+    } else {
+      shot_timeline.push({
+        shooter: cowboy_b['name'],
+        time: counter_b,
+        pos: shot_b['pos'],
+        hit: shot_b['hit']
+      });
+      
+      counter_b += shot_b['time'];
+      is_over = shot_b['hit'];
+      
+      shot_b = cowboy_b.shoot(cowboy_a);
+    }
+  // Repeat Step 2
+  }
+  return shot_timeline;
 
   // TODO: Write to Timeline data object, something like:
   // timeline = [{shooter, shot_time, shot_position, shot_outcome}, ...]
 }
 
 /**
- * Handles figuring out what happens after someone takes a shot.
- * Basically, applying Fitts's Law to the shot to calculate shot position.
- * @param {Cowboy} shooter
- * @param {number} start_pos
- * @returns {object} outcome in the form: {end_pos, result}
- */
-function simulateShot() {
-
-}
-
-/**
  * Handles running multiple simulations. It's just a for-loop.
  */
-function batchSimulation(n_trials, cowboy_a, cowboy_b) {
+function batch_sim(n_trials, cowboy_a, cowboy_b) {
 
 }
 
@@ -215,18 +300,24 @@ function bin_distribution(dist) {
  * @param {Cowboy} target Who's dyin'???
  * @returns an object whose keys are integers and values are counts
  */
-function bin_cowboy(shooter, target, n_trials=1000) {
+function bin_cowboy(shooter, target, distance=10, n_trials=1000) {
   let bins = {};
+  bins[true] = 0;
+  bins[false] = 0;
 
   for(let i = 0; i < n_trials; i++) {
     const sample = shooter.shoot(target);
-    const rounded_sample = Math.round(sample);
+    const sample_pos = sample['pos'];
+    const rounded_sample = Math.round(sample_pos);
 
     if(!bins[rounded_sample]) {
       bins[rounded_sample] = 1;
     } else {
       bins[rounded_sample]++;
     }
+
+    const sample_result = sample['hit'];
+    bins[sample_result]++;
   }
 
   return bins;
@@ -234,10 +325,10 @@ function bin_cowboy(shooter, target, n_trials=1000) {
 
 // Main Function
 function main() {
-  let arlo = new Cowboy("Arlo", 2, 1, 1, 0.5, 0);
-  let bob = new Cowboy("Bob", 2, 1, 1, 0.5, 0);
+  let arlo = new Cowboy("Arlo", 2, 0.250, 1, 0.999, 0);
+  let bob = new Cowboy("Bob", 2, 0.250, 1, 0.50, 0);
 
-  console.log(bin_cowboy(arlo, bob));
+  console.log(simulate_duel(arlo, bob));
 }
 
 // Go
