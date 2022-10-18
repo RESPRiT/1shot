@@ -1,16 +1,19 @@
-//------------------------------------------------------------------------------------------//
-// this codebase will be an omni-file because I do not anticipate it being that big anyways //
-//------------------------------------------------------------------------------------------//
+//----------------------------------------------//
+// this codebase will be an omni-file because I //
+// do not anticipate it being that big anyways  //
+//----------------------------------------------//
 
-//------------------
-// Scratch
-// - Let's just assume that the full range of any normal distribution is 3.5 std devs (in one direction)
-// - Also, it's probably easier to just use normalized normal distributions (3.5 std dev = half of the distribution)
-const MAX_SD = 3.5;
+//-------
+// Notes
+// - Let's just assume that the full range of any normal distribution is 3.5 std devs (in one direction, so 7 std devs across the entire distribution)
 
 import gaussian from 'gaussian'; // Documentation: https://github.com/errcw/gaussian
-import NormalDistribution from 'normal-distribution';
 
+//-----------
+// Constants
+const MAX_SD = 3.5;
+
+//---------------
 // Shooter Class
 class Cowboy {
   /**
@@ -24,13 +27,13 @@ class Cowboy {
    * @param {number} error desired error/accuracy, %: [0-1]
    * @param {number} consistency variance of error; ideal range: [0-50]
    */
-  constructor(name, width=2, delay=0.250, acceleration=1, error=0.5, consistency=0) {
+  constructor(name, width=2, delay=0.250, acceleration=10, error=0.5, consistency=0) {
     this.name = name;
 
     this.width = width;
 
     this.delay = delay;
-    this.acceleration = acceleration; 
+    this.acceleration = 1 / acceleration; // units needs to be inversed
     this.error = error;
     this.consistency = consistency;
   }
@@ -61,14 +64,18 @@ class Cowboy {
    * @param {number} distance how far is the target?
    * @returns {number} shot speed, lower-bound is 100ms
    */
-  calc_shot_speed(w_e_dist, distance) {
+  calc_shot_speed(w_e_dist, distance, delay_variance=false) {
     const w_e = w_e_dist.standardDeviation * MAX_SD;
 
-    // give some variance to reaction time, why not
-    // 0.001 is an arbitrary value that just seems to give a good spread
-    const delay_dist = gaussian(this.delay, 0.001);
-    // 100ms seems like a reasonable lower-bound
-    const curr_delay = Math.max(delay_dist.ppf(Math.random()), 0.100);
+    let curr_delay = this.delay;
+
+    if(delay_variance) {
+      // give some variance to reaction time, why not
+      // 0.001 is an arbitrary value that just seems to give a good spread
+      const delay_dist = gaussian(this.delay, 0.001);
+      // 100ms seems like a reasonable lower-bound
+      curr_delay = Math.max(delay_dist.ppf(Math.random()), 0.100);
+    }
 
     // if distance is less than half of the width_error, then you're
     // already on target, so shot speed is just reaction time (delay)
@@ -126,7 +133,10 @@ class Cowboy {
   }
 }
 
-// Helpers
+
+//------------------
+// Helper Functions
+
 /**
  * Stolen From: https://stackoverflow.com/questions/8816729/javascript-equivalent-for-inverse-normal-function-eg-excels-normsinv-or-nor
  * Basically an inverse z-table, frankly an eyesore
@@ -189,28 +199,36 @@ function capped_sample(dist) {
   return sample;
 }
 
+
+//------------------------------------
 // Simulation/Duel-Handling Functions
+
 /**
  * Handles shots back and forth until someone dies.
  * @param {Cowboy} cowboy_a
  * @param {Cowboy} cowboy_b
- * @returns {array} duel timeline: [
- *   {
+ * @returns {object} results: {
+ *   winner: name of winner,
+ *   shot_timeline: [{
  *     shooter: name of who shot,
  *     time: time in the timeline when the shot was taken,
  *     pos: position of shot relative to target,
  *     hit: result of the shot
- *   }
- * ]
+ *   }, ...]
+ * }
  */
-function simulate_duel(cowboy_a, cowboy_b) {
+function simulate_duel(cowboy_a, cowboy_b, distance=100) {
   let shot_timeline = [];
+  let winner;
 
   let is_turn_a = false;
   let is_over = false;
 
-  let shot_a = cowboy_a.shoot(cowboy_b);
-  let shot_b = cowboy_b.shoot(cowboy_a);
+  let distance_a = distance;
+  let distance_b = distance
+
+  let shot_a = cowboy_a.shoot(cowboy_b, distance_a);
+  let shot_b = cowboy_b.shoot(cowboy_a, distance_b);
 
   // Initialize counters for both cowboys, set to initial shot speed
   let counter_a = shot_a['time'];
@@ -223,13 +241,6 @@ function simulate_duel(cowboy_a, cowboy_b) {
     // Check which counter is smaller
     is_turn_a = counter_a <= counter_b;
 
-    // Call `simulateShot` for the smaller counter
-    // If someone died: duel is over
-    // Else: Increment smaller counter by shot speed
-
-    console.log(shot_a);
-    console.log(shot_b);
-
     // TODO: clean-up repeated code
     if(is_turn_a) {
       shot_timeline.push({
@@ -240,9 +251,11 @@ function simulate_duel(cowboy_a, cowboy_b) {
       });
 
       counter_a += shot_a['time'];
+      distance_a = Math.abs(shot_a['pos']);
       is_over = shot_a['hit'];
+      if(is_over) winner = cowboy_a['name'];
       
-      shot_a = cowboy_a.shoot(cowboy_b);
+      shot_a = cowboy_a.shoot(cowboy_b, distance_a);
     } else {
       shot_timeline.push({
         shooter: cowboy_b['name'],
@@ -252,26 +265,54 @@ function simulate_duel(cowboy_a, cowboy_b) {
       });
       
       counter_b += shot_b['time'];
+      distance_b = Math.abs(shot_b['pos']);
       is_over = shot_b['hit'];
+      if(is_over) winner = cowboy_b['name'];
       
-      shot_b = cowboy_b.shoot(cowboy_a);
+      shot_b = cowboy_b.shoot(cowboy_a, distance_b);
     }
-  // Repeat Step 2
   }
-  return shot_timeline;
-
-  // TODO: Write to Timeline data object, something like:
-  // timeline = [{shooter, shot_time, shot_position, shot_outcome}, ...]
+  return { winner, shot_timeline };
 }
 
 /**
  * Handles running multiple simulations. It's just a for-loop.
+ * @param {Cowboy} cowboy_a who up?
+ * @param {Cowboy} cowboy_b who up, too?
+ * @param {number} distance how far?
+ * @param {number} n_trials how many times?
+ * @returns {object} results of the simulations: {
+ *   winners: object where keys are names and values are wins,
+ *   timelines: array of every simulation timeline
+ * }
  */
-function batch_sim(n_trials, cowboy_a, cowboy_b) {
+function batch_sim(cowboy_a, cowboy_b, distance, n_trials=1000) {
+  let results = {
+    winners: {},
+    timelines: []
+  };
 
+  for(let i = 0; i < n_trials; i++) {
+    const duel_result = simulate_duel(cowboy_a, cowboy_b, distance);
+    const winner = duel_result['winner'];
+    const timeline = duel_result['shot_timeline'];
+
+    if(results['winners'][winner]) {
+      results['winners'][winner]++;
+    } else {
+      results['winners'][winner] = 1;
+    }
+
+    results['timelines'].push(timeline);
+  }
+
+  return results;
 }
 
+
+//-------------------
 // Testing Functions
+
 /**
  * Samples shots and puts the results in integer bins.
  * @param {gaussian} dist W_e distribution to sample from
@@ -323,12 +364,38 @@ function bin_cowboy(shooter, target, distance=10, n_trials=1000) {
   return bins;
 }
 
+//---------------
 // Main Function
 function main() {
-  let arlo = new Cowboy("Arlo", 2, 0.250, 1, 0.999, 0);
-  let bob = new Cowboy("Bob", 2, 0.250, 1, 0.50, 0);
+  /**
+   * 1) Base Case, 50/50 Case
+   * Both cowboys have:
+   * - Normal width (2u)
+   * - Normal delay (250ms)
+   * - "Instant" acceleration (99999)
+   * - Perfect consistency (0)
+   * 
+   * Arlo has:
+   * - "100%" desired error
+   * 
+   * Bob has:
+   * - 50% desired error
+   */
+  let arlo = new Cowboy("Arlo", 2, 0.250, 99999, 0.999, 0);
+  let bob = new Cowboy("Bob", 2, 0.250, 99999, 0.50, 0);
+  console.log(batch_sim(arlo, bob, 100, 10000)); // 50/50 outcome
 
-  console.log(simulate_duel(arlo, bob));
+  let arlo2 = new Cowboy("Arlo", 2, 0.250, 99999, 0.55, 0);
+  let bob2 = new Cowboy("Bob", 2, 0.250, 99999, 0.45, 0);
+  console.log(batch_sim(arlo2, bob2, 100, 10000)); // 40/60 outcome
+
+  let arlo3 = new Cowboy("Arlo", 2, 0.250, 99999, 0.65, 0);
+  let bob3 = new Cowboy("Bob", 2, 0.250, 99999, 0.35, 0);
+  console.log(batch_sim(arlo3, bob3, 100, 10000)); // 55/45 outcome
+  
+  let arlo4 = new Cowboy("Arlo", 2, 0.250, 99999, 0.75, 0);
+  let bob4 = new Cowboy("Bob", 2, 0.250, 99999, 0.25, 0);
+  console.log(batch_sim(arlo4, bob4, 100, 10000)); // 70/30 outcome
 }
 
 // Go
