@@ -8,67 +8,94 @@
 // - Also, it's probably easier to just use normalized normal distributions (3.5 std dev = 0.5)
 
 import gaussian from 'gaussian'; // Documentation: https://github.com/errcw/gaussian
+import NormalDistribution from 'normal-distribution';
 
 // Shooter Class
 class Cowboy {
   /**
    * Individual Properties
    * @param {string} name it's a name
-   * 
-   * Enemy Properties (weird, really, when done with OOP, but OK bc 1v1)
-   * @param {number} targetWidth "w" in Fitts's Law
+   * @param {number} width "w" in Fitts's Law
    * 
    * Shooting Properties
    * @param {number} delay "a" in Fitts's Law
    * @param {number} acceleration "b" in Fitts's Law
    * @param {number} error desired error/accuracy
-   * @param {number} consistency variance of error
+   * @param {number} consistency variance of error; ideal range: [~0-50]
    */
-  constructor(name, targetWidth=1, delay=1, acceleration=1, error=0.5, consistency=0) {
+  constructor(name, width=2, delay=1, acceleration=1, error=0.5, consistency=0) {
     this.name = name;
-    this.targetWidth = targetWidth;
-    
+
+    this.width = width;
+
     this.delay = delay;
     this.acceleration = acceleration; 
     this.error = error;
     this.consistency = consistency;
   }
+
+  /**
+   * Samples a value from the W_e distribution.
+   * @param {Cowboy} target who we shootin'???
+   * @returns {number} position of the shot relative to center of target
+   */
+  shoot(target) {
+    const w_e_dist = this.get_w_e_distribution(target);
+    return capped_sample(w_e_dist);
+  }
+
+  /**
+   * Calculate normal distribution for Width_error. In other words, the
+   * normal distribution where `error`% of outcomes are within `targetWidth`.
+   * @param {Cowboy} target the width of the target; the "success" range
+   * @returns {gaussian} the Width_error distribution
+   */
+  get_w_e_distribution(target) {
+    let curr_error;
+
+    if(this.consistency == 0) {
+      curr_error = this.error;
+    } else {
+      // Generate `errorDist` with mean = `error` and variance = `consistency`
+      const errorDist = gaussian(this.error, this.consistency / 1000);
+      
+      // Sample a value `curr_error` from `errorDist`
+      // ^- This how we add randomness (or none if `consistency` == 0)
+      curr_error = errorDist.ppf(Math.random());
+    }
+    
+    if(curr_error <= 0) {
+      curr_error = 0.01;
+    } else if(curr_error >= 1) {
+      curr_error = 0.99;
+    }
+
+    // Use `inverse_normal()` to compute the std dev (and, by-proxy, var) of the Width_error distribution
+    // ^- Don't forget to scale the distribution based on `targetWidth`
+    // ^- And don't forget that the distribution is 2-tailed
+    let one_tail_error = curr_error / 2; // assuming equal error on both sides of the distribution
+    const z_score = inverse_normal(0.5 + one_tail_error);
+
+    const std_dev = (target.width / 2) / z_score;
+
+    // Generate and return gaussian object for the W_e distribution
+    // ^- Alternatively, returns a sample from the distribution
+    const w_e_dist = gaussian(0, std_dev * std_dev);
+    return w_e_dist;
+
+    // Sanity Check Test Case
+    // If `targetWidth` = 2, `error` = 0.5, and `consistency` = 0:
+    // w_eDist.cdf(1) ~= 0.75
+    // w_eDist.cdf(0) ~= 0.50
+    // w_eDist.cdf(-1) ~= 0.25
+  }
 }
 
-// Some Helpers, Maybe Sort Later
-/**
- * Calculate normal distribution for Width_error. In other words, the
- * normal distribution where `error`% of outcomes are within `targetWidth`.
- * @param {number} targetWidth the width of the target; the "success" range
- * @param {number} error the desired accuracy % of the shooter (decimal)
- * @param {number} consistency the variance of the shooter's desired error
- *
- * @returns {gaussian} the Width_error distribution
- * OR
- * @returns {number} a sampled distance from the W_e distribution
- */
-function getW_eDistribution(targetWidth, error, consistency) {
-  // Generate `errorDist` with mean = `error` and variance = `consistency`
-  // Sample a value `currError` from `errorDist`
-  // ^- This how we add randomness (or none if `consistency` == 0)
-  // Use `inverse_normal()` to compute the std dev (and, by-proxy, var) of the Width_error distribution
-  // ^- Don't forget to scale the distribution based on `targetWidth`
-  // ^- And don't forget that the distribution is 2-tailed
-  // Generate and return gaussian object for the W_e distribution
-  // ^- Alternatively, returns a sample from the distribution
-
-
-  // Sanity Check Test Case
-  // If `targetWidth` = 2, `error` = 0.5, and `consistency` = 0:
-  // w_eDist.cdf(1) ~= 0.75
-  // w_eDist.cdf(0) ~= 0.50
-  // w_eDist.cdf(-1) ~= 0.25
-}
-
+// Helpers
 /**
  * Stolen From: https://stackoverflow.com/questions/8816729/javascript-equivalent-for-inverse-normal-function-eg-excels-normsinv-or-nor
  * Basically an inverse z-table, frankly an eyesore
- * @param {*} p (1-tailed) probability of a random value being smaller
+ * @param {number} p (1-tailed) probability of a random value being smaller
  * @returns {number} the corresponding z (std dev) value
  */
 function inverse_normal(p) {
@@ -108,9 +135,25 @@ function inverse_normal(p) {
     return retVal;
 }
 
+function capped_sample(dist) {
+  const std_dev = dist.standardDeviation;
+  const cap = std_dev * 3.5; // arbitrary
+
+  let sample = dist.ppf(Math.random());
+  if(sample > cap) {
+    sample = cap;
+  } else if(sample < -cap) {
+    sample = -cap;
+  }
+
+  return sample;
+}
+
 // Simulation/Duel-Handling Functions
 /**
  * Handles shots back and forth until someone dies.
+ * @param {Cowboy} cowboy_a
+ * @param {Cowboy} cowboy_b
  */
 function simulateDuel() {
   // Initialize counters for both cowboys, set to initial shot speed
@@ -128,6 +171,9 @@ function simulateDuel() {
 /**
  * Handles figuring out what happens after someone takes a shot.
  * Basically, applying Fitts's Law to the shot to calculate shot position.
+ * @param {Cowboy} shooter
+ * @param {number} start_pos
+ * @returns {object} outcome in the form: {end_pos, result}
  */
 function simulateShot() {
 
@@ -140,29 +186,58 @@ function batchSimulation(n_trials, cowboy_a, cowboy_b) {
 
 }
 
+// Testing Functions
+/**
+ * Samples shots and puts the results in integer bins.
+ * @param {gaussian} dist W_e distribution to sample from
+ * @returns an object whose keys are integers and values are counts
+ */
+function bin_distribution(dist) {
+  let bins = {};
+
+  for(let i = 0; i < 1000; i++) {
+    const sample = dist.ppf(Math.random());
+    const rounded_sample = Math.round(sample);
+
+    if(!bins[rounded_sample]) {
+      bins[rounded_sample] = 1;
+    } else {
+      bins[rounded_sample]++;
+    }
+  }
+
+  return bins;
+}
+
+/**
+ * Samples shots and puts the results in integer bins.
+ * @param {Cowboy} shooter Who's shootin'???
+ * @param {Cowboy} target Who's dyin'???
+ * @returns an object whose keys are integers and values are counts
+ */
+function bin_cowboy(shooter, target, n_trials=1000) {
+  let bins = {};
+
+  for(let i = 0; i < n_trials; i++) {
+    const sample = shooter.shoot(target);
+    const rounded_sample = Math.round(sample);
+
+    if(!bins[rounded_sample]) {
+      bins[rounded_sample] = 1;
+    } else {
+      bins[rounded_sample]++;
+    }
+  }
+
+  return bins;
+}
+
 // Main Function
 function main() {
-  // test code
-  // 0                         1
-  // |-------------------------|
-  //       |------------|       
-  //     0.25          0.75     
+  let arlo = new Cowboy("Arlo", 2, 1, 1, 0.5, 0);
+  let bob = new Cowboy("Bob", 2, 1, 1, 0.5, 0);
 
-  const z_score = 3.5;
-  const std_dev = 1 / z_score;
-  const variance = std_dev * std_dev;
-  const distTest = gaussian(0, variance);
-  console.log(distTest.cdf(1));
-  console.log(distTest.ppf(0.75));
-
-  const z_score_50 = inverse_normal(0.75);
-  const std_dev_50 = 1 / z_score_50;
-  console.log(std_dev_50);
-
-  const distTest50 = gaussian(0, std_dev_50 * std_dev_50);
-  console.log(distTest50.cdf(1));
-  console.log(distTest50.cdf(-1));
-  console.log(distTest50.cdf(0));
+  console.log(bin_cowboy(arlo, bob));
 }
 
 // Go
