@@ -7,6 +7,15 @@
 // Notes
 // - Let's just assume that the full range of any normal distribution is 3.5 std devs (in one direction, so 7 std devs across the entire distribution)
 
+//--------------
+// Some TO-DOs:
+// - Body/head shots
+// - Aim punch AND recoil
+// - Gun attributes (semi-auto spread, gun accuracy/bloom, reload time, clip size, first-shot accuracy, etc.)
+// - Cowboy health/hp
+// - Dodging (???)
+
+import { interpolateCividis, interpolateCool, interpolateMagma, interpolateRdYlGn, interpolateTurbo, interpolateViridis, interpolateWarm } from 'd3-scale-chromatic';
 import gaussian from 'gaussian'; // Documentation: https://github.com/errcw/gaussian
 
 //-----------
@@ -62,9 +71,11 @@ class Cowboy {
    * Uses Fitts's Law to calculate shot speed (MT).
    * @param {gaussian} w_e_dist w_e distribution of shot
    * @param {number} distance how far is the target?
+   * @param {boolean} delay_variance whether or not to add a small amount
+   *                                 of variance to delays (resolves ties)
    * @returns {number} shot speed, lower-bound is 100ms
    */
-  calc_shot_speed(w_e_dist, distance, delay_variance=false) {
+  calc_shot_speed(w_e_dist, distance, delay_variance=true) {
     const w_e = w_e_dist.standardDeviation * MAX_SD;
 
     let curr_delay = this.delay;
@@ -286,7 +297,7 @@ function simulate_duel(cowboy_a, cowboy_b, distance=100) {
  *   timelines: array of every simulation timeline
  * }
  */
-function batch_sim(cowboy_a, cowboy_b, distance, n_trials=1000) {
+function batch_sim(cowboy_a, cowboy_b, distance=100, n_trials=1000) {
   let results = {
     winners: {},
     timelines: []
@@ -309,6 +320,36 @@ function batch_sim(cowboy_a, cowboy_b, distance, n_trials=1000) {
   return results;
 }
 
+/**
+ * Runs batches to create a 2x2 grid for the error variable
+ * @param {number} width 
+ * @param {number} delay 
+ * @param {number} acceleration 
+ * @param {number} distance 
+ * @param {number} n_trials 
+ * @returns {array} 2x2 array of arlo error vs. bob error;
+ *                  arlo = y-axis, bob = x-axis
+ */
+function batch_error_2x2(increment, n_trials=1000, width=2, delay=0.250, acceleration=10, distance=100) {
+  let results_grid = [];
+
+  for(let error_a = 0.05; error_a < 1; error_a += increment) {
+    let curr_row = [];
+
+    for(let error_b = 0.05; error_b < 1; error_b += increment) {
+      let arlo = new Cowboy('Arlo', width, delay, acceleration, error_a);
+      let bob = new Cowboy('Bob', width, delay, acceleration, error_b);
+
+      let sim = batch_sim(arlo, bob, distance, n_trials);
+
+      curr_row.push(sim['winners']['Arlo'] / n_trials);
+    }
+
+    results_grid.push(curr_row);
+  }
+
+  return results_grid;
+}
 
 //-------------------
 // Testing Functions
@@ -364,11 +405,109 @@ function bin_cowboy(shooter, target, distance=10, n_trials=1000) {
   return bins;
 }
 
+//---------------------
+// Rendering Functions
+
+function draw_2x2(arr, increment) {
+  let canvas = document.getElementById('canvas');
+  let ctx = canvas.getContext('2d');
+
+  canvas.width = window.innerWidth - 20;
+  canvas.height = window.innerHeight * 2;
+
+  ctx.globalCompositeOperation = 'destination-over';
+  ctx.clearRect(0,0,canvas.width,canvas.height); // clear canvas
+
+  // values
+  let size = 50;
+  let gap = 1.2;
+  let font_scale = 0.5;
+  let font_stroke = size / 12.5;
+  let start_x = size * 2;
+  let start_y = size * 2;
+  let pos_x = start_x;
+  let pos_y = start_y;
+
+
+  // draw x-axis
+  let x_axis_pos = size * 2;
+  for(let x = 95; x > 0; x -= increment) {
+    ctx.textAlign = 'center';
+    let text_x = x_axis_pos + size / 2;
+    let text_y = size * 1.75;
+    ctx.fillStyle = 'white';
+    ctx.strokeStyle = 'black';
+    ctx.lineWidth = font_stroke;
+    ctx.font = 'italics' + size * font_scale * 0.75 + 'px Arial';
+    ctx.fillText(x + '%', text_x, text_y);
+    ctx.strokeText(x + '%', text_x, text_y);
+
+    x_axis_pos += size * gap;
+  }
+
+  // draw y-axis
+  let y_axis_pos = size * 2;
+  for(let y = 95; y > 0; y -= increment) {
+    ctx.textAlign = 'right';
+    let text_x = size * 1.75;
+    let text_y = y_axis_pos + size / 2 + size * font_scale * 0.75 / 4;
+    ctx.fillStyle = 'white';
+    ctx.strokeStyle = 'black';
+    ctx.lineWidth = font_stroke;
+    ctx.font = 'italics' + size * font_scale * 0.75 + 'px Arial';
+    ctx.fillText(y + '%', text_x, text_y);
+    ctx.strokeText(y + '%', text_x, text_y);
+
+    y_axis_pos += size * gap;
+  }
+
+  // draw title
+  if(false) {
+    let title_x = start_x + (arr[0].length * size * gap - size * (gap - 1)) / 2;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'white';
+    ctx.strokeStyle = 'black';
+    ctx.lineWidth = font_stroke;
+    ctx.font = 'bold italic ' + size * font_scale * 1.25 + 'px Arial';
+    ctx.fillText('Arlo vs. Bob: Accuracy', title_x, size * 1.25);
+  }
+
+  // draw grid
+  for(let y = arr.length - 1; y >= 0; y--) {
+    let row = arr[y];
+
+    for(let x = row.length - 1; x >= 0; x--) {
+      let value = row[x];
+      let color = interpolateRdYlGn(value);
+
+      // draw text label for square
+      ctx.textAlign = "center";
+      let text_x = pos_x + size / 2;
+      let text_y = pos_y + size / 2 + size * font_scale / 3;
+      ctx.fillStyle = 'white';
+      ctx.strokeStyle = 'black';
+      ctx.lineWidth = font_stroke;
+      ctx.font = 'bold ' + size * font_scale + 'px Arial';
+      ctx.fillText(Math.round(value * 100), text_x, text_y);
+      ctx.strokeText(Math.round(value * 100), text_x, text_y);
+      
+      // draw square
+      ctx.fillStyle = color;
+      ctx.fillRect(pos_x, pos_y, size, size);
+
+      pos_x += size * gap;
+    }
+
+    pos_x = start_x;
+    pos_y += size * gap;
+  }
+}
+
 //---------------
 // Main Function
 function main() {
   /**
-   * 1) Base Case, 50/50 Case
+   * 1a) Base Case, 50/50 Case
    * Both cowboys have:
    * - Normal width (2u)
    * - Normal delay (250ms)
@@ -385,17 +524,37 @@ function main() {
   let bob = new Cowboy("Bob", 2, 0.250, 99999, 0.50, 0);
   console.log(batch_sim(arlo, bob, 100, 10000)); // 50/50 outcome
 
-  let arlo2 = new Cowboy("Arlo", 2, 0.250, 99999, 0.55, 0);
-  let bob2 = new Cowboy("Bob", 2, 0.250, 99999, 0.45, 0);
+  let arlo2 = new Cowboy("Arlo", 2, 0.250, 10, 0.55, 0);
+  let bob2 = new Cowboy("Bob", 2, 0.250, 10, 0.45, 0);
   console.log(batch_sim(arlo2, bob2, 100, 10000)); // 40/60 outcome
 
-  let arlo3 = new Cowboy("Arlo", 2, 0.250, 99999, 0.65, 0);
-  let bob3 = new Cowboy("Bob", 2, 0.250, 99999, 0.35, 0);
-  console.log(batch_sim(arlo3, bob3, 100, 10000)); // 55/45 outcome
-  
-  let arlo4 = new Cowboy("Arlo", 2, 0.250, 99999, 0.75, 0);
-  let bob4 = new Cowboy("Bob", 2, 0.250, 99999, 0.25, 0);
-  console.log(batch_sim(arlo4, bob4, 100, 10000)); // 70/30 outcome
+  let arlo3 = new Cowboy("Arlo", 2, 0.250, 10, 0.65, 0);
+  let bob3 = new Cowboy("Bob", 2, 0.250, 10, 0.35, 0);
+  console.log(batch_sim(arlo3, bob3, 100, 10000)['winners']); // 55/45 outcome
+
+  let arlo4 = new Cowboy("Arlo", 2, 0.250, 10, 0.75, 0);
+  let bob4 = new Cowboy("Bob", 2, 0.250, 10, 0.25, 0);
+  console.log(batch_sim(arlo4, bob4, 100, 10000)['winners']); // 70/30 outcome
+
+  let arlo5 = new Cowboy("Arlo", 2, 0.250, 10, 0.05, 0);
+  let bob5 = new Cowboy("Bob", 2, 0.250, 10, 0.50, 0);
+  console.log(batch_sim(arlo5, bob5, 100, 10000)['winners']); // 70/30 outcome
+
+  let error_2x2 = batch_error_2x2(0.05, 1000);
+  console.log(error_2x2);
+  draw_2x2(error_2x2, 5);
+
+  /**
+   * 1b) Same as 1a but not instant, small variance on things like error
+   */
+
+  /**
+   * 2) Head shots and body shots (+HP)
+   */
+
+  /**
+   * 3) Tons of gun stuff
+   */
 }
 
 // Go
