@@ -16,6 +16,7 @@
 // - Dodging (???)
 
 import { interpolateCividis, interpolateCool, interpolateMagma, interpolateRdYlGn, interpolateTurbo, interpolateViridis, interpolateWarm } from 'd3-scale-chromatic';
+import _ from 'lodash';
 import gaussian from 'gaussian'; // Documentation: https://github.com/errcw/gaussian
 
 //-----------
@@ -330,13 +331,13 @@ function batch_sim(cowboy_a, cowboy_b, distance=100, n_trials=1000) {
  * @returns {array} 2x2 array of arlo error vs. bob error;
  *                  arlo = y-axis, bob = x-axis
  */
-function batch_error_2x2(increment, n_trials=1000, width=2, delay=0.250, acceleration=10, distance=100) {
+function batch_error_2x2(increment=0.05, lower_bound=0.05, upper_bound=0.95, n_trials=1000, width=2, delay=0.250, acceleration=10, distance=100) {
   let results_grid = [];
 
-  for(let error_a = 0.05; error_a < 1; error_a += increment) {
+  for(let error_a = lower_bound; error_a <= upper_bound + 0.001; error_a += increment) {
     let curr_row = [];
 
-    for(let error_b = 0.05; error_b < 1; error_b += increment) {
+    for(let error_b = lower_bound; error_b <= upper_bound + 0.001; error_b += increment) {
       let arlo = new Cowboy('Arlo', width, delay, acceleration, error_a);
       let bob = new Cowboy('Bob', width, delay, acceleration, error_b);
 
@@ -408,20 +409,17 @@ function bin_cowboy(shooter, target, distance=10, n_trials=1000) {
 //---------------------
 // Rendering Functions
 
-function draw_2x2(arr, increment) {
+function draw_2x2(arr, increment, lower_bound, upper_bound, size=50, gap=1.2, font_scale=0.5) {
   let canvas = document.getElementById('canvas');
   let ctx = canvas.getContext('2d');
 
-  canvas.width = window.innerWidth - 20;
-  canvas.height = window.innerHeight * 2;
+  canvas.width = size * gap * ((upper_bound - lower_bound) / increment + 1) + size * 4;
+  canvas.height = size * gap * ((upper_bound - lower_bound) / increment) + size * 5;
 
   ctx.globalCompositeOperation = 'destination-over';
   ctx.clearRect(0,0,canvas.width,canvas.height); // clear canvas
 
   // values
-  let size = 50;
-  let gap = 1.2;
-  let font_scale = 0.5;
   let font_stroke = size / 12.5;
   let start_x = size * 2;
   let start_y = size * 2;
@@ -430,35 +428,39 @@ function draw_2x2(arr, increment) {
 
 
   // draw x-axis
-  let x_axis_pos = size * 2;
-  for(let x = 95; x > 0; x -= increment) {
-    ctx.textAlign = 'center';
-    let text_x = x_axis_pos + size / 2;
-    let text_y = size * 1.75;
-    ctx.fillStyle = 'white';
-    ctx.strokeStyle = 'black';
-    ctx.lineWidth = font_stroke;
-    ctx.font = 'italics' + size * font_scale * 0.75 + 'px Arial';
-    ctx.fillText(x + '%', text_x, text_y);
-    ctx.strokeText(x + '%', text_x, text_y);
+  if(font_scale) {
+    let x_axis_pos = size * 2;
+    for(let x = upper_bound; x >= lower_bound - 0.001; x -= increment) {
+      ctx.textAlign = 'center';
+      let text_x = x_axis_pos + size / 2;
+      let text_y = size * 1.75;
+      ctx.fillStyle = 'white';
+      ctx.strokeStyle = 'black';
+      ctx.lineWidth = font_stroke;
+      ctx.font = 'italics' + size * font_scale * 0.75 + 'px Arial';
+      ctx.fillText(x + '%', text_x, text_y);
+      ctx.strokeText(x + '%', text_x, text_y);
 
-    x_axis_pos += size * gap;
+      x_axis_pos += size * gap;
+    }
   }
 
   // draw y-axis
-  let y_axis_pos = size * 2;
-  for(let y = 95; y > 0; y -= increment) {
-    ctx.textAlign = 'right';
-    let text_x = size * 1.75;
-    let text_y = y_axis_pos + size / 2 + size * font_scale * 0.75 / 4;
-    ctx.fillStyle = 'white';
-    ctx.strokeStyle = 'black';
-    ctx.lineWidth = font_stroke;
-    ctx.font = 'italics' + size * font_scale * 0.75 + 'px Arial';
-    ctx.fillText(y + '%', text_x, text_y);
-    ctx.strokeText(y + '%', text_x, text_y);
+  if(font_scale) {
+    let y_axis_pos = size * 2;
+    for(let y = upper_bound; y >= lower_bound - 0.001; y -= increment) {
+      ctx.textAlign = 'right';
+      let text_x = size * 1.75;
+      let text_y = y_axis_pos + size / 2 + size * font_scale * 0.75 / 4;
+      ctx.fillStyle = 'white';
+      ctx.strokeStyle = 'black';
+      ctx.lineWidth = font_stroke;
+      ctx.font = 'italics' + size * font_scale * 0.75 + 'px Arial';
+      ctx.fillText(y + '%', text_x, text_y);
+      ctx.strokeText(y + '%', text_x, text_y);
 
-    y_axis_pos += size * gap;
+      y_axis_pos += size * gap;
+    }
   }
 
   // draw title
@@ -481,11 +483,11 @@ function draw_2x2(arr, increment) {
       let color = interpolateRdYlGn(value);
 
       // draw text label for square
-      ctx.textAlign = "center";
+      ctx.textAlign = 'center';
       let text_x = pos_x + size / 2;
       let text_y = pos_y + size / 2 + size * font_scale / 3;
       ctx.fillStyle = 'white';
-      ctx.strokeStyle = 'black';
+      ctx.strokeStyle = 'rgb(10, 10, 10)';
       ctx.lineWidth = font_stroke;
       ctx.font = 'bold ' + size * font_scale + 'px Arial';
       ctx.fillText(Math.round(value * 100), text_x, text_y);
@@ -498,9 +500,25 @@ function draw_2x2(arr, increment) {
       pos_x += size * gap;
     }
 
+    // draw means
+    let text_x = pos_x + size / 4;
+    let text_y = pos_y + size / 2 + size * font_scale / 3;
+    ctx.textAlign = 'left';
+    ctx.font = 'bold italic ' + size * font_scale + 'px Arial';
+    // hellish float handling
+    let row_mean = _.mean(row).toFixed(3);
+    ctx.fillStyle = interpolateRdYlGn(row_mean);
+    let scaled_mean = Math.round(row_mean * 1000) / 10;
+    ctx.fillText(scaled_mean + '%', text_x, text_y);
+
     pos_x = start_x;
     pos_y += size * gap;
   }
+
+  // put it in an image
+  let canvas_img = document.getElementById('canvas-img');
+  let canvas_img_src = canvas.toDataURL('img/png');
+  canvas_img.src = canvas_img_src;
 }
 
 //---------------
@@ -540,9 +558,21 @@ function main() {
   let bob5 = new Cowboy("Bob", 2, 0.250, 10, 0.50, 0);
   console.log(batch_sim(arlo5, bob5, 100, 10000)['winners']); // 70/30 outcome
 
-  let error_2x2 = batch_error_2x2(0.05, 1000);
+  let size = 60;
+  let gap = 1;
+  let text_scale = 0.4;
+  let increment = 0.05;
+  let lower_bound = 0.05;
+  let upper_bound = 0.95;
+  let n_trials = 1000;
+  let width = 2;
+  let delay = 0.250;
+  let acceleration = 10;
+  let distance = 100;
+
+  let error_2x2 = batch_error_2x2(increment, lower_bound, upper_bound, n_trials, width, delay, acceleration, distance);
   console.log(error_2x2);
-  draw_2x2(error_2x2, 5);
+  draw_2x2(error_2x2, increment * 100, lower_bound * 100, upper_bound * 100, size, gap, text_scale);
 
   /**
    * 1b) Same as 1a but not instant, small variance on things like error
