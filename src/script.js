@@ -17,11 +17,14 @@
 
 import { interpolateCividis, interpolateCool, interpolateMagma, interpolateRdYlGn, interpolateTurbo, interpolateViridis, interpolateWarm } from 'd3-scale-chromatic';
 import _ from 'lodash';
+import seedrandom from 'seedrandom';
 import gaussian from 'gaussian'; // Documentation: https://github.com/errcw/gaussian
 
 //-----------
 // Constants
 const MAX_SD = 3.5;
+const rng_seed = 'hello';
+const get_random = new seedrandom(rng_seed);
 
 //---------------
 // Shooter Class
@@ -84,13 +87,17 @@ class Cowboy {
     if(delay_variance) {
       // give some variance to reaction time, why not
       // 0.001 is an arbitrary value that just seems to give a good spread
-      const delay_dist = gaussian(this.delay, 0.001);
+      // EDIT: I calculated my personal variance and it turns out I was off by a magnitude
+      // 0.0001 is a more realistic value (the value I calced for myself was 0.00012)
+      const delay_dist = gaussian(this.delay, 0.0001);
       // 100ms seems like a reasonable lower-bound
-      curr_delay = Math.max(delay_dist.ppf(Math.random()), 0.100);
+      curr_delay = Math.max(delay_dist.ppf(get_random()), 0.100);
     }
 
     // if distance is less than half of the width_error, then you're
     // already on target, so shot speed is just reaction time (delay)
+    // [later note] this is a kind of reasonable, kind of weird assumption
+    //      to make, but it's easier than trying to dynamically change w_e
     if(distance <= w_e / 2) {
       return curr_delay;
     }
@@ -115,7 +122,7 @@ class Cowboy {
       
       // Sample a value `curr_error` from `errorDist`
       // ^- This how we add randomness (or none if `consistency` == 0)
-      curr_error = error_dist.ppf(Math.random());
+      curr_error = error_dist.ppf(get_random());
     }
     
     if(curr_error <= 0) {
@@ -201,7 +208,7 @@ function capped_sample(dist) {
   const std_dev = dist.standardDeviation;
   const cap = std_dev * MAX_SD;
 
-  let sample = dist.ppf(Math.random());
+  let sample = dist.ppf(get_random());
   if(sample > cap) {
     sample = cap;
   } else if(sample < -cap) {
@@ -251,7 +258,12 @@ function simulate_duel(cowboy_a, cowboy_b, distance=100) {
     infinity_check++;
 
     // Check which counter is smaller
-    is_turn_a = counter_a <= counter_b;
+    if(counter_a == counter_b) {
+      is_turn_a = Math.round(Math.random());
+    } else {
+      is_turn_a = counter_a < counter_b;
+    }
+    //is_turn_a = counter_a <= counter_b;
 
     // TODO: clean-up repeated code
     if(is_turn_a) {
@@ -323,33 +335,55 @@ function batch_sim(cowboy_a, cowboy_b, distance=100, n_trials=1000) {
 
 /**
  * Runs batches to create a 2x2 grid for the error variable
- * @param {number} width 
- * @param {number} delay 
- * @param {number} acceleration 
- * @param {number} distance 
+ * @param {number array} width 
+ * @param {number array} delay 
+ * @param {number array} acceleration 
+ * @param {number array} distance 
  * @param {number} n_trials 
  * @returns {array} 2x2 array of arlo error vs. bob error;
  *                  arlo = y-axis, bob = x-axis
  */
-function batch_error_2x2(increment=0.05, lower_bound=0.05, upper_bound=0.95, n_trials=1000, width=2, delay=0.250, acceleration=10, distance=100) {
+function batch_error_2x2(increment=0.05, lower_bound=0.05, upper_bound=1.00, n_trials=1000, width=[2], delay=[0.250], acceleration=[20], distance=5) {
   let results_grid = [];
+  let trials_grid = [];
+  let mean_trials_grid = [];
 
   for(let error_a = lower_bound; error_a <= upper_bound + 0.001; error_a += increment) {
     let curr_row = [];
+    let curr_row_trials = [];
+    let curr_row_mean_trials = []
 
     for(let error_b = lower_bound; error_b <= upper_bound + 0.001; error_b += increment) {
-      let arlo = new Cowboy('Arlo', width, delay, acceleration, error_a);
-      let bob = new Cowboy('Bob', width, delay, acceleration, error_b);
+      let width_a = width[0];
+      let delay_a = delay[0];
+      let acceleration_a = acceleration[0];
+      let width_b = width.length > 1 ? width[1] : width_a;
+      let delay_b = delay.length > 1 ? delay[1] : delay_a;
+      let acceleration_b = acceleration.length > 1 ? acceleration[1] : acceleration_a;
+      
+      let arlo = new Cowboy('Arlo', width_a, delay_a, acceleration_a, error_a);
+      let bob = new Cowboy('Bob', width_b, delay_b, acceleration_b, error_b);
 
       let sim = batch_sim(arlo, bob, distance, n_trials);
 
       curr_row.push(sim['winners']['Arlo'] / n_trials);
+      curr_row_trials.push(sim);
+
+      let timelines = sim['timelines'];
+      let mean_shots = 0;
+      for(let trial of timelines) {
+        mean_shots += trial.length;
+      }
+      mean_shots /= timelines.length;
+      curr_row_mean_trials.push(mean_shots);
     }
 
     results_grid.push(curr_row);
+    trials_grid.push(curr_row_trials);
+    mean_trials_grid.push(curr_row_mean_trials);
   }
 
-  return results_grid;
+  return {results_grid, trials_grid, mean_trials_grid};
 }
 
 //-------------------
@@ -364,7 +398,7 @@ function bin_distribution(dist) {
   let bins = {};
 
   for(let i = 0; i < 1000; i++) {
-    const sample = dist.ppf(Math.random());
+    const sample = dist.ppf(get_random());
     const rounded_sample = Math.round(sample);
 
     if(!bins[rounded_sample]) {
@@ -409,6 +443,17 @@ function bin_cowboy(shooter, target, distance=10, n_trials=1000) {
 //---------------------
 // Rendering Functions
 
+/**
+ * Renders a given 2x2 results grid as a 2x2 gradient in canvas, then
+ * adds it to the DOM as an <img> element.
+ * @param {*} arr 
+ * @param {*} increment 
+ * @param {*} lower_bound 
+ * @param {*} upper_bound 
+ * @param {*} size 
+ * @param {*} gap 
+ * @param {*} font_scale 
+ */
 function draw_2x2(arr, increment, lower_bound, upper_bound, size=50, gap=1.2, font_scale=0.5) {
   let canvas = document.getElementById('canvas');
   let ctx = canvas.getContext('2d');
@@ -425,7 +470,7 @@ function draw_2x2(arr, increment, lower_bound, upper_bound, size=50, gap=1.2, fo
   let start_y = size * 2;
   let pos_x = start_x;
   let pos_y = start_y;
-
+  let is_decimal = Math.max(...arr[0]) <= 1;
 
   // draw x-axis
   if(font_scale) {
@@ -436,7 +481,7 @@ function draw_2x2(arr, increment, lower_bound, upper_bound, size=50, gap=1.2, fo
       let text_y = size * 1.75;
       ctx.fillStyle = 'white';
       ctx.strokeStyle = 'black';
-      ctx.lineWidth = font_stroke;
+      ctx.lineWidth = font_stroke * 0.75;
       ctx.font = 'italics' + size * font_scale * 0.75 + 'px Arial';
       ctx.fillText(x + '%', text_x, text_y);
       ctx.strokeText(x + '%', text_x, text_y);
@@ -454,7 +499,7 @@ function draw_2x2(arr, increment, lower_bound, upper_bound, size=50, gap=1.2, fo
       let text_y = y_axis_pos + size / 2 + size * font_scale * 0.75 / 4;
       ctx.fillStyle = 'white';
       ctx.strokeStyle = 'black';
-      ctx.lineWidth = font_stroke;
+      ctx.lineWidth = font_stroke * 0.75;
       ctx.font = 'italics' + size * font_scale * 0.75 + 'px Arial';
       ctx.fillText(y + '%', text_x, text_y);
       ctx.strokeText(y + '%', text_x, text_y);
@@ -475,12 +520,14 @@ function draw_2x2(arr, increment, lower_bound, upper_bound, size=50, gap=1.2, fo
   }
 
   // draw grid
+  let grid_max = Math.max(...arr.map(row => Math.max(...row)));
+
   for(let y = arr.length - 1; y >= 0; y--) {
     let row = arr[y];
 
     for(let x = row.length - 1; x >= 0; x--) {
       let value = row[x];
-      let color = interpolateRdYlGn(value);
+      let color = is_decimal ? interpolateRdYlGn(value) : interpolateRdYlGn(value / grid_max);
 
       // draw text label for square
       ctx.textAlign = 'center';
@@ -490,8 +537,8 @@ function draw_2x2(arr, increment, lower_bound, upper_bound, size=50, gap=1.2, fo
       ctx.strokeStyle = 'rgb(10, 10, 10)';
       ctx.lineWidth = font_stroke;
       ctx.font = 'bold ' + size * font_scale + 'px Arial';
-      ctx.fillText(Math.round(value * 100), text_x, text_y);
-      ctx.strokeText(Math.round(value * 100), text_x, text_y);
+      ctx.fillText(is_decimal ? Math.round(value * 100) : value.toFixed(1), text_x, text_y);
+      ctx.strokeText(is_decimal ? Math.round(value * 100) : value.toFixed(1), text_x, text_y);
       
       // draw square
       ctx.fillStyle = color;
@@ -508,71 +555,66 @@ function draw_2x2(arr, increment, lower_bound, upper_bound, size=50, gap=1.2, fo
     // hellish float handling
     let row_mean = _.mean(row).toFixed(3);
     ctx.fillStyle = interpolateRdYlGn(row_mean);
-    let scaled_mean = Math.round(row_mean * 1000) / 10;
-    ctx.fillText(scaled_mean + '%', text_x, text_y);
+    let scaled_mean = is_decimal ? Math.round(row_mean * 1000) / 10 : Number(row_mean).toFixed(1);
+    ctx.fillText(is_decimal ? scaled_mean + '%' : scaled_mean, text_x, text_y);
 
     pos_x = start_x;
     pos_y += size * gap;
   }
 
   // put it in an image
-  let canvas_img = document.getElementById('canvas-img');
+  let canvas_img = document.createElement('img');
   let canvas_img_src = canvas.toDataURL('img/png');
   canvas_img.src = canvas_img_src;
+  document.getElementById('imgs').appendChild(canvas_img);
+}
+
+//----------------
+// Data Functions
+
+function query_grid(grid, row, col) {
+  let curr_trials = grid[row][col];
+
+  let winners = curr_trials['winners'];
+  let timelines = curr_trials['timelines'];
+  let timeline_lengths = timelines.map(trial => trial.length);
+
+  let mean_shots = 0;
+  for(let trial of timelines) {
+    mean_shots += trial.length;
+  }
+  mean_shots /= timelines.length;
+
+  console.log(mean_shots);
 }
 
 //---------------
 // Main Function
 function main() {
-  /**
-   * 1a) Base Case, 50/50 Case
-   * Both cowboys have:
-   * - Normal width (2u)
-   * - Normal delay (250ms)
-   * - "Instant" acceleration (99999)
-   * - Perfect consistency (0)
-   * 
-   * Arlo has:
-   * - "100%" desired error
-   * 
-   * Bob has:
-   * - 50% desired error
-   */
-  let arlo = new Cowboy("Arlo", 2, 0.250, 99999, 0.999, 0);
-  let bob = new Cowboy("Bob", 2, 0.250, 99999, 0.50, 0);
-  console.log(batch_sim(arlo, bob, 100, 10000)); // 50/50 outcome
-
-  let arlo2 = new Cowboy("Arlo", 2, 0.250, 10, 0.55, 0);
-  let bob2 = new Cowboy("Bob", 2, 0.250, 10, 0.45, 0);
-  console.log(batch_sim(arlo2, bob2, 100, 10000)); // 40/60 outcome
-
-  let arlo3 = new Cowboy("Arlo", 2, 0.250, 10, 0.65, 0);
-  let bob3 = new Cowboy("Bob", 2, 0.250, 10, 0.35, 0);
-  console.log(batch_sim(arlo3, bob3, 100, 10000)['winners']); // 55/45 outcome
-
-  let arlo4 = new Cowboy("Arlo", 2, 0.250, 10, 0.75, 0);
-  let bob4 = new Cowboy("Bob", 2, 0.250, 10, 0.25, 0);
-  console.log(batch_sim(arlo4, bob4, 100, 10000)['winners']); // 70/30 outcome
-
-  let arlo5 = new Cowboy("Arlo", 2, 0.250, 10, 0.05, 0);
-  let bob5 = new Cowboy("Bob", 2, 0.250, 10, 0.50, 0);
-  console.log(batch_sim(arlo5, bob5, 100, 10000)['winners']); // 70/30 outcome
-
   let size = 60;
   let gap = 1;
   let text_scale = 0.4;
   let increment = 0.05;
   let lower_bound = 0.05;
-  let upper_bound = 0.95;
-  let n_trials = 1000;
-  let width = 2;
-  let delay = 0.250;
-  let acceleration = 10;
-  let distance = 100;
+  let upper_bound = 1.00;
+  let n_trials = 2000;
+  let width = [1]; // Array size 2 to specify asymmetrical scenarios
+  let delay = [0.200]; // 0.200-0.250 is "average"; 0.150-0.200 is "very good"
+  let acceleration = [10]; // 20 is about "average"; 50-60 is "upper bound"
+  let distance = 3; // 3 is about "good xhair placement" distance; 30 is about "decent flick"
 
   let error_2x2 = batch_error_2x2(increment, lower_bound, upper_bound, n_trials, width, delay, acceleration, distance);
-  console.log(error_2x2);
-  draw_2x2(error_2x2, increment * 100, lower_bound * 100, upper_bound * 100, size, gap, text_scale);
+  console.log(error_2x2.trials_grid);
+  draw_2x2(error_2x2.results_grid, increment * 100, lower_bound * 100, upper_bound * 100, size, gap, text_scale);
+
+  let error_2x2b = batch_error_2x2(increment, lower_bound, upper_bound, n_trials, width, delay, [20], distance);
+  console.log(error_2x2b.trials_grid);
+  draw_2x2(error_2x2b.results_grid, increment * 100, lower_bound * 100, upper_bound * 100, size, gap, text_scale);
+  
+  draw_2x2(error_2x2.results_grid, increment * 100, lower_bound * 100, upper_bound * 100, size, gap, 0);
+  draw_2x2(error_2x2b.results_grid, increment * 100, lower_bound * 100, upper_bound * 100, size, gap, 0);
+  draw_2x2(error_2x2.mean_trials_grid, increment * 100, lower_bound * 100, upper_bound * 100, size, gap, text_scale);
+  query_grid(error_2x2.trials_grid, 18, 0);
 
   /**
    * 1b) Same as 1a but not instant, small variance on things like error
