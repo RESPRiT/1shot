@@ -38,7 +38,7 @@ class Cowboy {
    * @param {number} delay "a" in Fitts's Law, seconds
    * @param {number} acceleration "b" in Fitts's Law, made up units
    * @param {number} error desired error/accuracy, %: [0-1]
-   * @param {number} consistency variance of error; ideal range: [0-50]
+   * @param {number} consistency variance of error; ideal range: [0-50] -- basically unused
    */
   constructor(name, width=2, delay=0.250, acceleration=10, error=0.5, consistency=0) {
     this.name = name;
@@ -46,7 +46,7 @@ class Cowboy {
     this.width = width;
 
     this.delay = delay;
-    this.acceleration = 1 / acceleration; // units needs to be inversed
+    this.acceleration = 1 / acceleration; // units needs to be inverted
     this.error = error;
     this.consistency = consistency;
   }
@@ -80,7 +80,7 @@ class Cowboy {
    * @returns {number} shot speed, lower-bound is 100ms
    */
   calc_shot_speed(w_e_dist, distance, delay_variance=true) {
-    const w_e = w_e_dist.standardDeviation * MAX_SD;
+    const w_e = w_e_dist.standardDeviation * MAX_SD * 2;
 
     let curr_delay = this.delay;
 
@@ -89,6 +89,10 @@ class Cowboy {
       // 0.001 is an arbitrary value that just seems to give a good spread
       // EDIT: I calculated my personal variance and it turns out I was off by a magnitude
       // 0.0001 is a more realistic value (the value I calced for myself was 0.00012)
+      // EDIT 2: OK, so none of the calculations here are wrong thanks to other people doing
+      // the math instead of me, but I was interpreting the 0.0001 value as "0.1ms" when it is actually "100ms^2" (or "0.0001s^2")
+      // Variance is squared units, SD is where I will get non-square units, so this 0.0001 value is best
+      // expressed as "a standard deviation of 10ms" (or "variance of 100ms^2") - which passes the intuition check (and my frantic vetting)
       const delay_dist = gaussian(this.delay, 0.0001);
       // 100ms seems like a reasonable lower-bound
       curr_delay = Math.max(delay_dist.ppf(get_random()), 0.100);
@@ -206,7 +210,7 @@ function inverse_normal(p) {
  */
 function capped_sample(dist) {
   const std_dev = dist.standardDeviation;
-  const cap = std_dev * MAX_SD;
+  const cap = std_dev * MAX_SD * 2;
 
   let sample = dist.ppf(get_random());
   if(sample > cap) {
@@ -259,11 +263,10 @@ function simulate_duel(cowboy_a, cowboy_b, distance=100) {
 
     // Check which counter is smaller
     if(counter_a == counter_b) {
-      is_turn_a = Math.round(Math.random());
+      is_turn_a = Math.round(Math.random()); // coin flip
     } else {
       is_turn_a = counter_a < counter_b;
     }
-    //is_turn_a = counter_a <= counter_b;
 
     // TODO: clean-up repeated code
     if(is_turn_a) {
@@ -338,7 +341,7 @@ function batch_sim(cowboy_a, cowboy_b, distance=100, n_trials=1000) {
  * @param {number array} width 
  * @param {number array} delay 
  * @param {number array} acceleration 
- * @param {number array} distance 
+ * @param {number} distance 
  * @param {number} n_trials 
  * @returns {array} 2x2 array of arlo error vs. bob error;
  *                  arlo = y-axis, bob = x-axis
@@ -528,6 +531,8 @@ function draw_2x2(arr, increment, lower_bound, upper_bound, size=50, gap=1.2, fo
     for(let x = row.length - 1; x >= 0; x--) {
       let value = row[x];
       let color = is_decimal ? interpolateRdYlGn(value) : interpolateRdYlGn(value / grid_max);
+      //console.log(value);
+      //console.log(color);
 
       // draw text label for square
       ctx.textAlign = 'center';
@@ -572,6 +577,7 @@ function draw_2x2(arr, increment, lower_bound, upper_bound, size=50, gap=1.2, fo
 //----------------
 // Data Functions
 
+// meant to map a results grid to a new grid, but is just mean trials rn
 function query_grid(grid, row, col) {
   let curr_trials = grid[row][col];
 
@@ -597,37 +603,73 @@ function main() {
   let increment = 0.05;
   let lower_bound = 0.05;
   let upper_bound = 1.00;
-  let n_trials = 2000;
+  let n_trials = 1000;
   let width = [1]; // Array size 2 to specify asymmetrical scenarios
-  let delay = [0.200]; // 0.200-0.250 is "average"; 0.150-0.200 is "very good"
-  let acceleration = [10]; // 20 is about "average"; 50-60 is "upper bound"
-  let distance = 3; // 3 is about "good xhair placement" distance; 30 is about "decent flick"
+  let delay = [0.150]; // 0.200-0.250 is "average"; 0.150-0.200 is "very good"
+  let acceleration = [50]; // 20 is about "average"; 50-60 is "upper bound"
+  let distance = 6; // 3 is about "good xhair placement" distance; 30 is about "decent flick"
 
   let error_2x2 = batch_error_2x2(increment, lower_bound, upper_bound, n_trials, width, delay, acceleration, distance);
-  console.log(error_2x2.trials_grid);
+  //console.log(error_2x2.trials_grid);
+  console.log(error_2x2.results_grid);
   draw_2x2(error_2x2.results_grid, increment * 100, lower_bound * 100, upper_bound * 100, size, gap, text_scale);
 
-  let error_2x2b = batch_error_2x2(increment, lower_bound, upper_bound, n_trials, width, delay, [20], distance);
-  console.log(error_2x2b.trials_grid);
-  draw_2x2(error_2x2b.results_grid, increment * 100, lower_bound * 100, upper_bound * 100, size, gap, text_scale);
-  
+  //let error_2x2b = batch_error_2x2(increment, lower_bound, upper_bound, n_trials, width, [.1], acceleration, distance);
+  //console.log(error_2x2b.results_grid);
+  //draw_2x2(error_2x2b.results_grid, increment * 100, lower_bound * 100, upper_bound * 100, size, gap, text_scale);
+
+  //let error_2x2c = batch_error_2x2(increment, lower_bound, upper_bound, n_trials, [.5], delay, [10], distance);
+  //console.log(error_2x2c.trials_grid);
+  //draw_2x2(error_2x2c.results_grid, increment * 100, lower_bound * 100, upper_bound * 100, size, gap, text_scale);
+
+  /*
   draw_2x2(error_2x2.results_grid, increment * 100, lower_bound * 100, upper_bound * 100, size, gap, 0);
   draw_2x2(error_2x2b.results_grid, increment * 100, lower_bound * 100, upper_bound * 100, size, gap, 0);
+  draw_2x2(error_2x2c.results_grid, increment * 100, lower_bound * 100, upper_bound * 100, size, gap, 0);
   draw_2x2(error_2x2.mean_trials_grid, increment * 100, lower_bound * 100, upper_bound * 100, size, gap, text_scale);
   query_grid(error_2x2.trials_grid, 18, 0);
-
-  /**
-   * 1b) Same as 1a but not instant, small variance on things like error
-   */
-
-  /**
-   * 2) Head shots and body shots (+HP)
-   */
-
-  /**
-   * 3) Tons of gun stuff
-   */
+  */
 }
+
+// I shouldn't put this here but I will
+function proability_approach() {
+  let grid = [];
+  let count = 0;
+
+  for(let i = 5; i <= 100; i += 5) {
+    let row = [];
+    
+    for(let j = 5; j <= 100; j += 5) {
+      if(i == j) {
+        row.push(.5);
+      } else if(i < j) {
+        // i is faster
+        // p(i_win) = i%
+        // p(j_win) = (1 - i%) * j
+        // p(draw) = miss * miss
+        // a = p(i_win), r = p(draw)
+        // s = a / (1 - r)
+        let i_win = i / 100;
+        let r = (1 - i / 100) * (1 - j / 100);
+        let i_win_resolved_draws = i_win / (1 - r);
+
+        row.push(i_win_resolved_draws);
+      } else {
+        // i is slower
+        let i_win = (1 - j / 100) * i / 100;
+        let r = (1 - i / 100) * (1 - j / 100);
+        let i_win_resolved_draws = i_win / (1 - r);
+
+        row.push(i_win_resolved_draws);
+      }
+      console.log(`i: ${i}, j: ${j}`);
+    }
+    grid.push(row);
+  }
+  console.log(grid);
+}
+
+//proability_approach();
 
 // Go
 main();
